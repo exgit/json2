@@ -1,2 +1,2 @@
 # json2
-json library for C language
+Json library for C language.
