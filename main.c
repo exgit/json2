@@ -1,6 +1,4 @@
 #include "json.h"
-#include <stddef.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,11 +51,11 @@ static jparser_t *jp;
 static bool Test1(void) {
 	jw_begin(jw);
 	jw_int(jw, 55, NULL);
-	if (jw_get(jw, &json, &jsize))
-		return false;
+	if (jw_get(jw, &json, &jsize)) return false;
 
-	if (jp_parse(jp, &node, json, jsize))
-		return false;
+	printf("%s: %s\n", __func__, json);
+
+	if (jp_parse(jp, &node, json, jsize)) return false;
 	return is_node_int(node, 55);
 }
 
@@ -69,11 +67,11 @@ static bool Test2(void) {
 
 	jw_begin(jw);
 	jw_dbl(jw, val, NULL);
-	if (jw_get(jw, &json, &jsize))
-		return false;
+	if (jw_get(jw, &json, &jsize)) return false;
 
-	if (jp_parse(jp, &node, json, jsize))
-		return false;
+	printf("%s: %s\n", __func__, json);
+
+	if (jp_parse(jp, &node, json, jsize)) return false;
 	return is_node_dbl(node, val);
 #else
 	return true;
@@ -81,17 +79,17 @@ static bool Test2(void) {
 }
 
 
-// Single string value
+// Single string value.
 static bool Test3(void) {
 	const char *val = "Test String!";
 
 	jw_begin(jw);
 	jw_str(jw, val, NULL);
-	if (jw_get(jw, &json, &jsize))
-		return false;
+	if (jw_get(jw, &json, &jsize)) return false;
 
-	if (jp_parse(jp, &node, json, jsize))
-		return false;
+	printf("%s: %s\n", __func__, json);
+
+	if (jp_parse(jp, &node, json, jsize)) return false;
 	return is_node_str(node, val);
 }
 
@@ -109,13 +107,12 @@ static bool Test4(void) {
 		jw_int(jw, val2, NULL);
 		jw_str(jw, val3, NULL);
 	jw_aend(jw);
-	if (jw_get(jw, &json, &jsize))
-		return false;
+	if (jw_get(jw, &json, &jsize)) return false;
 
-	if (jp_parse(jp, &node, json, jsize))
-		return false;
-	if (node->type != JT_ARR)
-		return false;
+	printf("%s: %s\n", __func__, json);
+
+	if (jp_parse(jp, &node, json, jsize)) return false;
+	if (node->type != JT_ARR) return false;
 	n = jn_elt(node, 0);
 	if (!is_node_int(n, val1)) return false;
 	n = jn_elt(node, 1);
@@ -126,7 +123,7 @@ static bool Test4(void) {
 }
 
 
-// Object with 9 attributes
+// Object with 9 attributes.
 static bool Test5(void) {
 	jw_begin(jw);
 	jw_obegin(jw, NULL);
@@ -140,13 +137,12 @@ static bool Test5(void) {
 		jw_int(jw, 807, "def3");
 		jw_int(jw, 808, "ghi3");
 	jw_oend(jw);
-	if (jw_get(jw, &json, &jsize))
-		return false;
+	if (jw_get(jw, &json, &jsize)) return false;
 
-	if (jp_parse(jp, &node, json, jsize))
-		return false;
-	if (node->type != JT_OBJ)
-		return false;
+	printf("%s: %s\n", __func__, json);
+
+	if (jp_parse(jp, &node, json, jsize)) return false;
+	if (node->type != JT_OBJ) return false;
 	if (!is_node_int(jn_attr(node, "abc1"), 800)) return false;
 	if (!is_node_int(jn_attr(node, "def1"), 801)) return false;
 	if (!is_node_int(jn_attr(node, "ghi1"), 802)) return false;
@@ -156,6 +152,40 @@ static bool Test5(void) {
 	if (!is_node_int(jn_attr(node, "abc3"), 806)) return false;
 	if (!is_node_int(jn_attr(node, "def3"), 807)) return false;
 	if (!is_node_int(jn_attr(node, "ghi3"), 808)) return false;
+
+	return true;
+}
+
+
+// Array of objects.
+static bool Test6(void) {
+	enum {count = 3};
+	int ids[count] = {111, 222, 333};
+	const char *names[count] = {"obj_111", "obj_222", "obj_333"};
+	int i;
+
+	jw_begin(jw);
+	jw_abegin(jw, NULL);
+	for (i = 0; i < count; i++) {
+		jw_obegin(jw, NULL);
+			jw_int(jw, ids[i], "id");
+			jw_str(jw, names[i], "name");
+		jw_oend(jw);
+	}
+	jw_aend(jw);
+	if (jw_get(jw, &json, &jsize)) return false;
+
+	printf("%s: %s\n", __func__, json);
+
+	if (jp_parse(jp, &node, json, jsize)) return false;
+	if (node->type != JT_ARR) return false;
+	if (node->elts.count != 3) return false;
+	for (i = 0; i < count; i++) {
+		jnode_t *n = jn_elt(node, i);
+		if (n->type != JT_OBJ) return false;
+		if (!is_node_int(jn_attr(n, "id"), ids[i])) return false;
+		if (!is_node_str(jn_attr(n, "name"), names[i])) return false;
+	}
 
 	return true;
 }
@@ -171,7 +201,8 @@ static test_f tests[] = {
 	Test2,
 	Test3,
 	Test4,
-	Test5
+	Test5,
+	Test6
 };
 
 
@@ -208,6 +239,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	// print results
+	printf("\n");
 	for (int i=0; i < (int)tcount; i++) {
 		printf("Test %d %s\r\n", i+1, (results[i] ? "  Ok" : "Fail"));
 	}
