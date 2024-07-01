@@ -6,11 +6,9 @@ CONFIG += c11
 
 
 HEADERS += \
-	json.h \
-	marena.h
+    json.h
 
 
 SOURCES += \
-	json.c \
-	main.c \
-	marena.c
+    json.c \
+    main.c
