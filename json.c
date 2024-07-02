@@ -1607,6 +1607,24 @@ void jw_dbl(jwriter_t *jw, double val, const char *name)
     jw_printf(jw, "%f", val);
     jw->stack[jw->sidx].tt = JDBL;
 }
+
+/* Write double value with specified precision to json writer.
+ * Possible errors are not reported until call to jw_get().
+ *
+ * In:
+ *      jw - ptr to json writer object
+ *      val - double value
+ *      prec - precision
+ *      name - object attribute name if writing is done inside object context;
+ *             must be NULL if writing is done inside array context
+ */
+void jw_dbl_prec(jwriter_t *jw, double val, int prec, const char *name)
+{
+    if (jw_prepv(jw, name))
+        return;
+    jw_printf(jw, "%.*f", prec, val);
+    jw->stack[jw->sidx].tt = JDBL;
+}
 #endif
 
 /* Write string value to json writer.

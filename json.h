@@ -6,7 +6,7 @@
 /* Define JSON_DOUBLE as 1, if your json data contains floating point numbers
  * and your platform supports 'double' type.
  */
-#define JSON_DOUBLE 0
+#define JSON_DOUBLE 1
 
 // Json value types.
 typedef enum _jtype_t {
@@ -80,6 +80,7 @@ void jw_null(jwriter_t *jw, const char *name);
 void jw_bool(jwriter_t *jw, bool val, const char *name);
 #if JSON_DOUBLE == 1
 void jw_dbl(jwriter_t *jw, double val, const char *name);
+void jw_dbl_prec(jwriter_t *jw, double val, int prec, const char *name);
 #endif
 void jw_int(jwriter_t *jw, int val, const char *name);
 void jw_str(jwriter_t *jw, const char *str, const char *name);

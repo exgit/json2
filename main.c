@@ -70,11 +70,17 @@ static bool Test1(void)
 static bool Test2(void)
 {
 #if JSON_DOUBLE == 1
-    double val = 3.1415926;
+    double val = 3.14159265358979323846;
+    jnode_t* n;
 
     jw_begin(jw);
     {
-        jw_dbl(jw, val, NULL);
+        jw_abegin(jw, NULL);
+        {
+            jw_dbl(jw, val, NULL);
+            jw_dbl_prec(jw, val, 20, NULL);
+        }
+        jw_aend(jw);
     }
     if (jw_get(jw, &json, &jsize))
         return false;
@@ -83,10 +89,17 @@ static bool Test2(void)
 
     if (jp_parse(jp, &node, json, jsize))
         return false;
-    return is_node_dbl(node, val);
-#else
-    return true;
+    if (node->type != JT_ARR)
+        return false;
+    n = jn_elt(node, 0);
+    if (!is_node_dbl(n, val))
+        return false;
+    n = jn_elt(node, 1);
+    if (!is_node_dbl(n, val))
+        return false;
 #endif
+
+    return true;
 }
 
 
