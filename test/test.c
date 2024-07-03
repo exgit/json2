@@ -1,4 +1,5 @@
-#include "json.h"
+#include "../json.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +9,7 @@
 * Helper functions.
 *****************************************************************************/
 
-static bool is_node_int(jnode_t* n, int val)
+static bool is_node_int(jnode_t *n, int val)
 {
     if (n->type != JT_INT)
         return false;
@@ -16,7 +17,7 @@ static bool is_node_int(jnode_t* n, int val)
 }
 
 #if JSON_DOUBLE == 1
-static bool is_node_dbl(jnode_t* n, double val)
+static bool is_node_dbl(jnode_t *n, double val)
 {
     double eps = 0.000001;
     if (n->type != JT_DBL)
@@ -25,11 +26,30 @@ static bool is_node_dbl(jnode_t* n, double val)
 }
 #endif
 
-static bool is_node_str(jnode_t* n, const char* val)
+static bool is_node_str(jnode_t *n, const char *val)
 {
     if (n->type != JT_STR)
         return false;
     return (0 == strcmp(n->str_val, val));
+}
+
+static void *read_file_to_mem(const char *filename, size_t *outSize)
+{
+    FILE *file = fopen(filename, "rb");
+    if (!file)
+        return NULL;
+
+    fseek(file, 0, SEEK_END);
+    size_t size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char *buf = malloc(size + 1);
+    fread(buf, size, 1, file);
+    fclose(file);
+
+    buf[size] = 0;
+    *outSize = size;
+    return buf;
 }
 
 
@@ -37,11 +57,11 @@ static bool is_node_str(jnode_t* n, const char* val)
 * Common data.
 *****************************************************************************/
 
-static char* json;
+static char *json;
 static size_t jsize;
-static jnode_t* node;
-static jwriter_t* jw;
-static jparser_t* jp;
+static jnode_t *node;
+static jwriter_t *jw;
+static jparser_t *jp;
 
 
 /*****************************************************************************
@@ -71,7 +91,7 @@ static bool Test2(void)
 {
 #if JSON_DOUBLE == 1
     double val = 3.14159265358979323846;
-    jnode_t* n;
+    jnode_t *n;
 
     jw_begin(jw);
     {
@@ -106,7 +126,7 @@ static bool Test2(void)
 // Single string value.
 static bool Test3(void)
 {
-    const char* val = "Test String!";
+    const char *val = "Test String!";
 
     jw_begin(jw);
     {
@@ -128,8 +148,8 @@ static bool Test4(void)
 {
     int val1 = 223344;
     int val2 = 867757;
-    const char* val3 = "Test String 57589347";
-    jnode_t* n;
+    const char *val3 = "Test String 57589347";
+    jnode_t *n;
 
     jw_begin(jw);
     {
@@ -219,7 +239,7 @@ static bool Test6(void)
 {
     enum { count = 3 };
     int ids[count] = { 111, 222, 333 };
-    const char* names[count] = { "obj_111", "obj_222", "obj_333" };
+    const char *names[count] = { "obj_111", "obj_222", "obj_333" };
     int i;
 
     jw_begin(jw);
@@ -247,7 +267,7 @@ static bool Test6(void)
     if (node->elts.count != 3)
         return false;
     for (i = 0; i < count; i++) {
-        jnode_t* n = jn_elt(node, i);
+        jnode_t *n = jn_elt(node, i);
         if (n->type != JT_OBJ)
             return false;
         if (!is_node_int(jn_attr(n, "id"), ids[i]))
@@ -257,6 +277,32 @@ static bool Test6(void)
     }
 
     return true;
+}
+
+static bool Test7(void)
+{
+    bool ret = false;
+    char *fjson = NULL;
+    size_t fjson_size = 0;
+
+    const char *filename = "data/canada.json";
+    fjson = read_file_to_mem(filename, &fjson_size);
+    if (!fjson) {
+        printf("%s: Failed to open file '%s'. Error %d - %s.\n",
+               __func__, filename, errno, strerror(errno));
+        goto exit;
+    }
+
+    printf("%s: Loaded file '%s'.\n", __func__, filename);
+
+    if (jp_parse(jp, &node, fjson, fjson_size))
+        goto exit;
+
+    ret = true;
+
+exit:
+    free(fjson);
+    return ret;
 }
 
 
@@ -271,7 +317,8 @@ static test_f tests[] = {
     Test3,
     Test4,
     Test5,
-    Test6
+    Test6,
+    Test7
 };
 
 
@@ -279,7 +326,7 @@ static test_f tests[] = {
 * Entry point.
 *****************************************************************************/
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
@@ -300,7 +347,7 @@ int main(int argc, char* argv[])
     size_t tcount = sizeof(tests) / sizeof(tests[0]);
 
     // array for results
-    bool* results = malloc(tcount * sizeof(bool));
+    bool *results = malloc(tcount * sizeof(bool));
     memset(results, 0, tcount * sizeof(bool));
 
     // run tests
@@ -314,5 +361,6 @@ int main(int argc, char* argv[])
         printf("Test %d %s\r\n", i + 1, (results[i] ? "  Ok" : "Fail"));
     }
 
+    free(results);
     return 0;
 }

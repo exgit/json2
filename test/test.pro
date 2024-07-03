@@ -6,9 +6,9 @@ CONFIG += c11
 
 
 HEADERS += \
-    json.h
+    ../json.h
 
 
 SOURCES += \
-    json.c \
-    main.c
+    test.c \
+    ../json.c

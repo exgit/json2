@@ -87,43 +87,95 @@ struct _marena_t {
 static marena_chunk_hdr_t *marena_create_chunk(size_t size)
 {
     ROUNDUP(size);
-    marena_chunk_hdr_t *ret = malloc(sizeof(marena_chunk_hdr_t) + size);
-    if (ret) {
-        ret->size = size;
-        ret->allocated = 0;
-        ret->next = NULL;
+    marena_chunk_hdr_t *chunk = malloc(sizeof(marena_chunk_hdr_t) + size);
+    if (chunk) {
+        chunk->size = size;
+        chunk->allocated = 0;
+        chunk->next = NULL;
     }
-    return ret;
+    return chunk;
+}
+
+// Destroy arena chunk list.
+static void marena_destroy_chunk_list(marena_chunk_hdr_t *c)
+{
+    while (c) {
+        marena_chunk_hdr_t *p = c;
+        c = c->next;
+        free(p);
+    }
+}
+
+// Reset memory arena.
+static bool marena_reset(marena_t *ma, size_t default_chunk_size)
+{
+    marena_chunk_hdr_t *chunk;
+
+    // Case: no chunks or big chunk not filled enough.
+    // Make default chunk.
+    if (ma->first == NULL
+            || (ma->first->allocated < default_chunk_size / 2
+            && ma->chunk_size > default_chunk_size)) {
+        marena_destroy_chunk_list(ma->first);
+        ma->chunk_size = default_chunk_size;
+        goto create;
+    }
+
+    // Case: chunks with different sizes.
+    // Make one chunk with current size.
+    for (chunk=ma->first; chunk; chunk=chunk->next) {
+        if (chunk->size != ma->chunk_size) {
+            marena_destroy_chunk_list(ma->first);
+            goto create;
+        }
+    }
+
+    // Case: chunk list is too long.
+    // Make one chunk with bigger size.
+    int count = 0;
+    for (chunk=ma->first; chunk; chunk=chunk->next) {
+        if (++count > 4) {
+            marena_destroy_chunk_list(ma->first);
+            ma->chunk_size *= 2;
+            goto create;
+        }
+    }
+
+    // Case: no adjustment needed.
+    goto reset;
+
+create:
+    ma->first = marena_create_chunk(ma->chunk_size);
+    if (!ma->first)
+        return false;
+
+reset:
+    ma->curr = ma->first;
+    ma->curr->allocated = 0;
+    ma->free = NULL;
+    return true;
 }
 
 // Create memory arena object.
 static marena_t *marena_create(size_t size)
 {
     ROUNDUP(size);
-    marena_t *ret = malloc(sizeof(marena_t));
-    if (ret) {
-        marena_chunk_hdr_t *chunk = marena_create_chunk(size);
-        if (!chunk) {
-            free(ret);
-            return NULL;
+    marena_t *arena = malloc(sizeof(marena_t));
+    if (arena) {
+        arena->chunk_size = size;
+        arena->first = NULL;
+        if (!marena_reset(arena, size)) {
+            free(arena);
+            arena = NULL;
         }
-        ret->chunk_size = size;
-        ret->first = chunk;
-        ret->curr = chunk;
-        ret->free = NULL;
     }
-    return ret;
+    return arena;
 }
 
 // Destroy memory arena object.
 static void marena_destroy(marena_t *ma)
 {
-    marena_chunk_hdr_t *curr = ma->first;
-    while (curr) {
-        marena_chunk_hdr_t *next = curr->next;
-        free(curr);
-        curr = next;
-    }
+    marena_destroy_chunk_list(ma->first);
     free(ma);
 }
 
@@ -131,22 +183,34 @@ static void marena_destroy(marena_t *ma)
 static void *marena_alloc(marena_t *ma, size_t size)
 {
     char *ret = NULL;
-
     if (ma == NULL)
         goto exit;
-
     ROUNDUP(size);
+
+    // current chunk does not have enough space - try to select next chunk
     if (ma->curr->allocated + size > ma->curr->size) {
         if (ma->curr->next) {
-            ma->curr = ma->curr->next;
-            ma->curr->allocated = 0;
-        } else {
-            marena_chunk_hdr_t *chunk = marena_create_chunk(ma->chunk_size);
-            if (!chunk)
-                goto exit;
-            ma->curr->next = chunk;
-            ma->curr = chunk;
+            if (ma->curr->next->size > size) {
+                ma->curr = ma->curr->next;
+                ma->curr->allocated = 0;
+            } else {
+                marena_destroy_chunk_list(ma->curr->next);
+                ma->curr->next = NULL;
+            }
         }
+    }
+
+    // check current chunk again, but now it is guaranteed to be a last chunk
+    if (ma->curr->allocated + size > ma->curr->size) {
+        // grow chunk size as needed
+        while (ma->chunk_size < size)
+            ma->chunk_size *= 2;
+        // create new chunk
+        marena_chunk_hdr_t *chunk = marena_create_chunk(ma->chunk_size);
+        if (!chunk)
+            goto exit;
+        ma->curr->next = chunk;
+        ma->curr = chunk;
     }
 
     ret = (char*)ma->curr + sizeof(marena_chunk_hdr_t) + ma->curr->allocated;
@@ -154,18 +218,6 @@ static void *marena_alloc(marena_t *ma, size_t size)
 
 exit:
     return ret;
-}
-
-// Free all memory arena.
-static void marena_free(marena_t *ma)
-{
-    if (ma == NULL)
-        return;
-
-    ma->curr = ma->first;
-    ma->curr->allocated = 0;
-
-    ma->free = NULL;
 }
 
 // Allocate returnable block from memory arena.
@@ -757,7 +809,10 @@ int jp_parse(jparser_t *jp, jnode_t **root, const char *json, size_t len)
 {
     jnode_t *n = NULL;
 
-    marena_free(jp->mem);
+    if (!marena_reset(jp->mem, JSON_MEM_MIN)) {
+        ERROR("no memory");
+        return -1;
+    }
 
     jp->start = json;
     jp->len = (uint)len;
