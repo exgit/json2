@@ -31,17 +31,29 @@
 #include <string.h>
 
 
+#define HAVE_TRACE 0
+
+
 typedef unsigned int uint;
 typedef unsigned char uchar;
 typedef unsigned short ushort;
 
 
-// Error reporting macro. Disable or redefine it as needed.
+// Error reporting macro.
 #if 1
 #define ERROR(fmt, ...) fprintf(stderr, \
-    "ERROR: %s():%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+    "JSON ERROR: %s():%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #else
 #define ERROR(fmt, ...) ((void)0)
+#endif
+
+
+// Tracing macro.
+#if HAVE_TRACE == 1
+#define TRACE(fmt, ...) fprintf(stderr, \
+    "JSON TRACE: %s():%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define TRACE(fmt, ...) ((void)0)
 #endif
 
 
@@ -50,13 +62,10 @@ typedef unsigned short ushort;
 *****************************************************************************/
 
 // magic number for free block header
-#define MAGIC 0xFFFF7575
+#define MAGIC 0x76543210
 
-// allocation granularity
-#define GRANULARITY (sizeof(void*))
-
-// rounding up to GRANULARITY bytes
-#define ROUNDUP(x) x += (-x & (GRANULARITY - 1))
+// rounding up
+#define ROUNDUP(x) x += (-x & (sizeof(void*) - 1))
 
 // arena chunk header
 typedef struct _marena_chunk_hdr_t marena_chunk_hdr_t;
@@ -71,13 +80,19 @@ typedef struct _marena_rt_hdr_t marena_rt_hdr_t;
 struct _marena_rt_hdr_t {
     marena_rt_hdr_t *next; // ptr to next free block
     size_t size; // size of this block (including header size)
-    size_t magic; // magic number for correctness test
+    uint mmc; // mismatch count for a free block
+    uint magic; // magic number for correctness test
 };
 
 // memory arena object (size aligned go GRANULARITY)
 typedef struct _marena_t marena_t;
 struct _marena_t {
     size_t chunk_size;  // arena chunk size
+    #if HAVE_TRACE == 1
+    size_t alloc_count;
+    size_t search_count;
+    size_t size_max;
+    #endif
     marena_chunk_hdr_t *first;  // first arena memory chunk
     marena_chunk_hdr_t *curr;  // current arena memory chunk
     marena_rt_hdr_t *free; // ptr to first free returnable block
@@ -150,6 +165,11 @@ create:
         return false;
 
 reset:
+    #if HAVE_TRACE == 1
+    ma->alloc_count = 0;
+    ma->search_count = 0;
+    ma->size_max = 0;
+    #endif
     ma->curr = ma->first;
     ma->curr->allocated = 0;
     ma->free = NULL;
@@ -223,42 +243,56 @@ exit:
 // Allocate returnable block from memory arena.
 static void *marena_alloc_rt(marena_t *ma, size_t size)
 {
-    char *ret = NULL;
+    marena_rt_hdr_t **prev = &ma->free;
+    marena_rt_hdr_t *curr;
 
     // add header size
     ROUNDUP(size);
     size += sizeof(marena_rt_hdr_t);
 
-    // try to allocate returnable block from prevously freed
-    marena_rt_hdr_t **prev = &ma->free;
-    marena_rt_hdr_t *curr;
-    for (curr = *prev; curr; prev = &curr->next, curr = curr->next)
+    #if HAVE_TRACE == 1
+    ma->alloc_count++;
+    if (size > ma->size_max) {
+        TRACE("Setting new size_max: %ld", size);
+        ma->size_max = size;
+    }
+    #endif
+
+    // allocate from prevously freed
+    for (curr = *prev; curr; curr = curr->next) {
         if (curr->size >= size) {
-            if (curr->size >= 2 * size) { // split block in two
+            if (curr->size >= 4 * size) { // split block
                 curr->size -= size;
-                marena_rt_hdr_t *spl = (void*)((char*)curr + curr->size);
+                marena_rt_hdr_t *spl = (marena_rt_hdr_t*)((char*)curr + curr->size);
                 spl->next = 0;
                 spl->size = size;
                 spl->magic = MAGIC;
-                ret = (char*)(spl + 1);
-            } else { // allocate all block
+                return (char*)(spl + 1);
+            } else { // allocate full block
                 *prev = curr->next;
-                ret = (char*)(curr + 1);
+                return (char*)(curr + 1);
             }
-            goto exit;
         }
 
-    // try to allocate from arena
+        #if HAVE_TRACE == 1
+        ma->search_count++;
+        #endif
+
+        if (curr->size < 512 && (++curr->mmc > 16)) {
+            *prev = curr->next; // remove block from free list
+        } else {
+            prev = &curr->next; // leave block in free list
+        }
+    }
+
+    // allocate from arena
     curr = marena_alloc(ma, size);
     if (!curr)
-        goto exit;
+        return NULL;
     curr->next = NULL;
     curr->size = size;
     curr->magic = MAGIC;
-    ret = (char*)(curr + 1);
-
-exit:
-    return ret;
+    return (char*)(curr + 1);
 }
 
 // Resize returnable block.
@@ -293,6 +327,7 @@ static void *marena_realloc_rt(marena_t *ma, void *ptr, size_t size)
     memcpy(ret, ptr, curr->size);
 
     // free old block
+    curr->mmc = 0;
     curr->next = ma->free;
     ma->free = curr;
 
@@ -303,20 +338,15 @@ exit:
 // Free returnable block.
 static void marena_free_rt(marena_t *ma, void *ptr)
 {
-    if (ma == NULL)
-        goto exit;
-
     // check if ptr really points to returnable block
     marena_rt_hdr_t *curr = (marena_rt_hdr_t*)ptr - 1;
     if (curr->magic != MAGIC)
-        goto exit;
+        return;
 
     // free block
+    curr->mmc = 0;
     curr->next = ma->free;
     ma->free = curr;
-
-exit:
-    return;
 }
 
 
@@ -353,7 +383,7 @@ static ant_t *ant_create(marena_t *mem)
         return NULL;
     ant->mem = mem;
 
-    ant->an_cap = 8;
+    ant->an_cap = 16;
     ant->an = marena_alloc_rt(mem, ant->an_cap * sizeof(ant->an[0]));
     if (ant->an == NULL)
         return NULL;
@@ -414,7 +444,7 @@ static int ant_add_token(ant_t *ant, const char *start, uint len)
     uint i;
 
     // copy name to buffer adding 0 at end
-    char name[64];
+    char name[256];
     if (len >= sizeof(name)) {
         ERROR("attribute name too long");
         goto exit;
@@ -519,11 +549,9 @@ static void ht_set(ht_t *ht, ani_t k, int v)
     }
     ht->k[i] = k;
     if (ht->num < 256) {
-        uchar *arr = ht->v;
-        arr[i] = (uchar)v;
+        ((uchar*)ht->v)[i] = (uchar)v;
     } else {
-        ani_t *arr = ht->v;
-        arr[i] = (ani_t)v;
+        ((ushort*)ht->v)[i] = (ushort)v;
     }
 }
 
@@ -534,11 +562,9 @@ static int ht_get(ht_t *ht, ani_t k)
     while (ht->k[i]) {
         if (ht->k[i] == k) {
             if (ht->num < 256) {
-                uchar *arr = ht->v;
-                return arr[i];
+                return ((uchar*)ht->v)[i];
             } else {
-                ani_t *arr = ht->v;
-                return arr[i];
+                return ((ushort*)ht->v)[i];
             }
         }
         if (++i >= ht->size)
@@ -845,6 +871,8 @@ int jp_parse(jparser_t *jp, jnode_t **root, const char *json, size_t len)
                 return -1;
             if (t == JINSTART)
                 return -1;
+            TRACE("Allocations count: %ld", jp->mem->alloc_count);
+            TRACE("Search count: %ld", jp->mem->search_count);
             return 0;
         case JASTART:
             n = jp_new_node(jp, JT_ARR);
@@ -1241,14 +1269,6 @@ static void jp_next(jparser_t *jp)
         if (t == CCL) {
             tok->type = JNAME;
             pos++;
-            if (ct[jsn[tok->pos]] != CLT)
-                goto error;
-            uint i = 1;
-            for (; i < tok->len; i++) {
-                t = ct[jsn[tok->pos + i]];
-                if (t != CLT && t != CNM)
-                    goto error;
-            }
         }
         goto exit;
     }

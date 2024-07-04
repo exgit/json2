@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 
 /*****************************************************************************
@@ -44,12 +45,73 @@ static void *read_file_to_mem(const char *filename, size_t *outSize)
     fseek(file, 0, SEEK_SET);
 
     char *buf = malloc(size + 1);
-    fread(buf, size, 1, file);
+    size_t items = fread(buf, size, 1, file);
+    if (items != 1) {
+        free(buf);
+        buf = NULL;
+        *outSize = 0;
+    } else {
+        buf[size] = 0;
+        *outSize = size;
+    }
     fclose(file);
 
-    buf[size] = 0;
-    *outSize = size;
     return buf;
+}
+
+
+/*****************************************************************************
+* Timer functions.
+*****************************************************************************/
+
+#define MYTIMER_STATE_CREATED   1
+#define MYTIMER_STATE_STARTED   2
+#define MYTIMER_STATE_STOPPED   3
+
+typedef struct mytimer {
+    int state;
+    struct timespec ts;
+    char result[64];
+} mytimer_t;
+
+mytimer_t *mytimer_create()
+{
+    mytimer_t *timer;
+    timer = (mytimer_t*)malloc(sizeof(mytimer_t));
+    timer->state = MYTIMER_STATE_CREATED;
+    snprintf(timer->result, sizeof(timer->result), "NULL");
+    return timer;
+}
+
+void mytimer_destroy(mytimer_t *timer)
+{
+    free(timer);
+}
+
+void mytimer_start(mytimer_t *timer)
+{
+    clock_gettime(CLOCK_MONOTONIC, &timer->ts);
+    timer->state = MYTIMER_STATE_STARTED;
+    snprintf(timer->result, sizeof(timer->result), "NULL");
+}
+
+void mytimer_stop(mytimer_t *timer)
+{
+    if (timer->state != MYTIMER_STATE_STARTED)
+        return;
+    struct timespec ts = timer->ts;
+    clock_gettime(CLOCK_MONOTONIC, &timer->ts);
+    timer->ts.tv_sec -= ts.tv_sec;
+    timer->ts.tv_nsec -= ts.tv_nsec;
+    if (timer->ts.tv_nsec < 0) {
+        timer->ts.tv_sec--;
+        timer->ts.tv_nsec += 1000000000;
+    }
+    timer->state = MYTIMER_STATE_STOPPED;
+    snprintf(timer->result, sizeof(timer->result),
+             "Elapsed time: %d.%03d sec",
+             (int)timer->ts.tv_sec,
+             (int)(timer->ts.tv_nsec / 1000000));
 }
 
 
@@ -126,7 +188,7 @@ static bool Test2(void)
 // Single string value.
 static bool Test3(void)
 {
-    const char *val = "Test String!";
+    const char *val = "Hello world! Здравствуй мир! שלום עולם! 你好世界！";
 
     jw_begin(jw);
     {
@@ -148,7 +210,7 @@ static bool Test4(void)
 {
     int val1 = 223344;
     int val2 = 867757;
-    const char *val3 = "Test String 57589347";
+    const char *val3 = "Test String '1234567'";
     jnode_t *n;
 
     jw_begin(jw);
@@ -282,26 +344,56 @@ static bool Test6(void)
 static bool Test7(void)
 {
     bool ret = false;
-    char *fjson = NULL;
-    size_t fjson_size = 0;
+    char *fj1=NULL, *fj2=NULL, *fj3=NULL;
+    size_t fj1size=0, fj2size=0, fj3size=0;
+    const char *fn1 = "data/canada.json";
+    const char *fn2 = "data/citm_catalog.json";
+    const char *fn3 = "data/twitter.json";
 
-    const char *filename = "data/canada.json";
-    fjson = read_file_to_mem(filename, &fjson_size);
-    if (!fjson) {
-        printf("%s: Failed to open file '%s'. Error %d - %s.\n",
-               __func__, filename, errno, strerror(errno));
-        goto exit;
-    }
-
+    const char *filename = fn1;
+    fj1 = read_file_to_mem(filename, &fj1size);
+    if (!fj1) goto erropen;
     printf("%s: Loaded file '%s'.\n", __func__, filename);
 
-    if (jp_parse(jp, &node, fjson, fjson_size))
+    filename = fn2;
+    fj2 = read_file_to_mem(filename, &fj2size);
+    if (!fj2) goto erropen;
+    printf("%s: Loaded file '%s'.\n", __func__, filename);
+
+    filename = fn3;
+    fj3 = read_file_to_mem(filename, &fj3size);
+    if (!fj3) goto erropen;
+    printf("%s: Loaded file '%s'.\n", __func__, filename);
+
+    mytimer_t *timer = mytimer_create();
+    mytimer_start(timer);
+    if (jp_parse(jp, &node, fj1, fj1size)) {
+        printf("%s: Failed to parse file '%s'.\n", __func__, fn1);
         goto exit;
+    }
+    if (jp_parse(jp, &node, fj2, fj2size)) {
+        printf("%s: Failed to parse file '%s'.\n", __func__, fn2);
+        goto exit;
+    }
+    if (jp_parse(jp, &node, fj3, fj3size)) {
+        printf("%s: Failed to parse file '%s'.\n", __func__, fn3);
+        goto exit;
+    }
+    mytimer_stop(timer);
+    printf("%s: %s.\n", __func__, timer->result);
+    mytimer_destroy(timer);
 
     ret = true;
+    goto exit;
+
+erropen:
+    printf("%s: Failed to open file '%s'. Error %d - %s.\n",
+           __func__, filename, errno, strerror(errno));
 
 exit:
-    free(fjson);
+    free(fj1);
+    free(fj2);
+    free(fj3);
     return ret;
 }
 
@@ -312,13 +404,8 @@ exit:
 
 typedef bool (*test_f)(void);
 static test_f tests[] = {
-    Test1,
-    Test2,
-    Test3,
-    Test4,
-    Test5,
-    Test6,
-    Test7
+    Test1, Test2, Test3, Test4,
+    Test5, Test6, Test7
 };
 
 
