@@ -423,6 +423,7 @@ int main(int argc, char *argv[])
         printf("jw_create() error.");
         return 1;
     }
+    jw_pretty_print(jw, 2, 2);
 
     res = jp_create(&jp, 0, 0);
     if (res) {

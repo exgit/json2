@@ -73,6 +73,8 @@ int jp_parse(jparser_t *jp, jnode_t **root, const char *str, size_t len);
 int jw_create(jwriter_t **jw, size_t mem, size_t stack);
 void jw_destroy(jwriter_t *jw);
 
+void jw_pretty_print(jwriter_t *jw, int depth, int margin);
+
 void jw_begin(jwriter_t *jw);
 int jw_get(jwriter_t *jw, char **str, size_t *size);
 

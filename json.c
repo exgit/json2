@@ -1402,6 +1402,7 @@ static const char *jp_read_str(jparser_t *jp, int *len)
 typedef struct {
     jctx ctx; // parsing context
     jtt tt; // current token type
+    uint pp; // pretty-print flag
 } jwstk;
 
 // Json writer object.
@@ -1414,6 +1415,9 @@ struct _jwriter_t {
     jwstk *stack; // stack
     uint ssize; // stack size
     uint sidx; // stack index
+
+    uint ppd; // pretty-print depth
+    uint ppm; // pretty-print margin size (in spaces)
 };
 
 // Write zero-terminated string to json buffer.
@@ -1424,9 +1428,8 @@ static void jw_strz(jwriter_t *jw, const char *str)
         if (c == 0)
             break;
         if (jw->pos >= jw->len - 1) {
-            ERROR("buffer too small");
-            jw->err = 1;
-            return;
+            jw->len *= 2;
+            jw->start = realloc(jw->start, jw->len);
         }
         jw->start[jw->pos++] = c;
     }
@@ -1438,32 +1441,65 @@ static void jw_printf(jwriter_t *jw, const char *fmt, ...)
 {
     va_list v;
     va_start(v, fmt);
-    char *buf = jw->start + jw->pos;
-    size_t size = jw->len - jw->pos - 1;
-    int res = vsnprintf(buf, size, fmt, v);
-    va_end(v);
-    if (res < 0) {
-        if (errno == ERANGE) {
-            ERROR("buffer too small");
+
+    while (!jw->err) {
+        bool grow = false;
+        char *buf = jw->start + jw->pos;
+        size_t size = jw->len - jw->pos - 1;
+        int res = vsnprintf(buf, size, fmt, v);
+        if (res < 0) {
+            if (errno == ERANGE) {
+                grow = true;
+            } else {
+                ERROR("vsnprintf() error %d '%s'", errno, strerror(errno));
+                jw->err = 1;
+            }
         } else {
-            ERROR("vsnprintf() error %d '%s'", errno, strerror(errno));
+            if ((size_t)res > size) {
+                grow = true;
+            } else {
+                jw->pos += (uint)res;
+                break;
+            }
         }
-        jw->err = 1;
-    } else {
-        if ((size_t)res > size) {
-            ERROR("buffer too small");
-            res = (int)size;
-            jw->err = 1;
+        if (grow) {
+            jw->len *= 2;
+            jw->start = realloc(jw->start, jw->len);
         }
-        jw->pos += (uint)res;
     }
+
+    va_end(v);
 }
 #pragma GCC diagnostic warning "-Wformat-nonliteral"
+
+// Write margin to json buffer.
+static void jw_margin(jwriter_t *jw)
+{
+    jwstk *s = jw->stack + jw->sidx;
+    if (!s->pp)
+        return;
+
+    if (jw->pos >= jw->len - 1) {
+        jw->len *= 2;
+        jw->start = realloc(jw->start, jw->len);
+    }
+    jw->start[jw->pos++] = '\n';
+
+    for (uint i=0; i < jw->sidx; i++) {
+        for (uint j=0; j < jw->ppm; j++) {
+            if (jw->pos >= jw->len - 1) {
+                jw->len *= 2;
+                jw->start = realloc(jw->start, jw->len);
+            }
+            jw->start[jw->pos++] = ' ';
+        }
+    }
+}
 
 // Prepare for writing a value to json string.
 static int jw_prepv(jwriter_t *jw, const char *name)
 {
-    if (!jw)
+    if (!jw || jw->err)
         return -1;
 
     jwstk *s = jw->stack + jw->sidx;
@@ -1478,19 +1514,25 @@ static int jw_prepv(jwriter_t *jw, const char *name)
         return -1;
     }
 
-    if (s->ctx == CTXVAL) {
+    if (s->ctx == CTXVAL) { // value
         if (s->tt != JINSTART) {
             jw->err = 1;
         }
-    } else if (s->ctx == CTXARR) {
+    } else if (s->ctx == CTXARR) { // array
         if (s->tt != JASTART) {
             jw_strz(jw, ",");
+        }
+        if (s->pp) {
+            jw_margin(jw);
         }
     } else { // object
         if (s->tt != JOSTART) {
             jw_strz(jw, ",");
         }
-        jw_printf(jw, "\"%s\":", name);
+        if (s->pp) {
+            jw_margin(jw);
+        }
+        jw_printf(jw, (s->pp ? "\"%s\": " : "\"%s\":"), name);
     }
 
     return jw->err;
@@ -1500,7 +1542,7 @@ static int jw_prepv(jwriter_t *jw, const char *name)
  *
  * In:
  *      jw[out] - address of ptr to json writer object
- *      mem - amount of memory to be used for writing;
+ *      mem - initial amount of memory to be used for writing;
  *            if 0, then default value is used
  *      stack - stack depth; this value controls maximum nesting in json;
  *              if 0 then default value is used
@@ -1564,6 +1606,22 @@ void jw_destroy(jwriter_t *jw)
     free(jw->start);
     free(jw->stack);
     free(jw);
+}
+
+/* Set pretty-print parameters.
+ *
+ * In:
+ *      jw - ptr to json writer object
+ *      depth - only nodes with level value up to this number will be aligned
+ *      margin - number of space character per margin
+ */
+void jw_pretty_print(jwriter_t *jw, int depth, int margin)
+{
+    if (!jw)
+        return;
+
+    jw->ppd = depth < 0 ? 0 : depth;
+    jw->ppm = margin < 0 ? 0 : margin;
 }
 
 /* Begin json writing.
@@ -1717,12 +1775,7 @@ void jw_str(jwriter_t *jw, const char *str, const char *name)
         return;
 
     jw_strz(jw, "\"");
-    size_t i, size = jw->len - jw->pos - 1;
-    for (i = 0; i < size; i++) {
-        char c = str[i];
-        if (c == 0)
-            break;
-
+    for (char c = *str; c; c = *(++str)) {
         // do escaping
         if (c == '"')
             jw_strz(jw, "\\\"");
@@ -1742,9 +1795,8 @@ void jw_str(jwriter_t *jw, const char *str, const char *name)
             jw_strz(jw, "\\t");
         else {
             if (jw->pos >= jw->len - 1) {
-                ERROR("buffer too small");
-                jw->err = 1;
-                return;
+                jw->len *= 2;
+                jw->start = realloc(jw->start, jw->len);
             }
             jw->start[jw->pos++] = c;
         }
@@ -1766,6 +1818,7 @@ void jw_abegin(jwriter_t *jw, const char *name)
 {
     if (jw_prepv(jw, name))
         return;
+
     jw_strz(jw, "[");
 
     if (jw->sidx >= jw->ssize - 1) {
@@ -1777,6 +1830,7 @@ void jw_abegin(jwriter_t *jw, const char *name)
     jwstk *s = jw->stack + jw->sidx;
     s->ctx = CTXARR;
     s->tt = JASTART;
+    s->pp = (jw->ppd > jw->sidx);
 }
 
 /* End writing of array value to json writer.
@@ -1789,13 +1843,17 @@ void jw_aend(jwriter_t *jw)
 {
     if (!jw || jw->err)
         return;
-    jw_strz(jw, "]");
 
     if (jw->sidx == 0) {
         jw->err = 1;
         return;
     }
     jw->sidx--;
+
+    if (jw->stack[jw->sidx].pp && jw->stack[jw->sidx+1].pp) {
+        jw_margin(jw);
+    }
+    jw_strz(jw, "]");
 
     jw->stack[jw->sidx].tt = JAEND;
 }
@@ -1812,6 +1870,7 @@ void jw_obegin(jwriter_t *jw, const char *name)
 {
     if (jw_prepv(jw, name))
         return;
+
     jw_strz(jw, "{");
 
     if (jw->sidx >= jw->ssize - 1) {
@@ -1823,6 +1882,7 @@ void jw_obegin(jwriter_t *jw, const char *name)
     jwstk *s = jw->stack + jw->sidx;
     s->ctx = CTXOBJ;
     s->tt = JOSTART;
+    s->pp = (jw->ppd > jw->sidx);
 }
 
 /* End writing of object value to json writer.
@@ -1835,13 +1895,17 @@ void jw_oend(jwriter_t *jw)
 {
     if (!jw || jw->err)
         return;
-    jw_strz(jw, "}");
 
     if (jw->sidx == 0) {
         jw->err = 1;
         return;
     }
     jw->sidx--;
+
+    if (jw->stack[jw->sidx].pp && jw->stack[jw->sidx+1].pp) {
+        jw_margin(jw);
+    }
+    jw_strz(jw, "}");
 
     jw->stack[jw->sidx].tt = JOEND;
 }
