@@ -1,6 +1,6 @@
 # build files
 *.o
-test
+./test/test
 
 # qtcreator user file
 CMakeLists.txt.user
