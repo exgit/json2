@@ -1,9 +1,0 @@
-# build files
-*.o
-test
-
-
-# qmake generated files
-test.pro.user
-.qmake.stash
-Makefile

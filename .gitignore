@@ -1,0 +1,9 @@
+# build files
+*.o
+test
+
+# qtcreator user file
+CMakeLists.txt.user
+
+# qtcreator build directories
+build-*
