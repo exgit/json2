@@ -36,7 +36,10 @@ static bool is_node_str(jnode_t *n, const char *val)
 
 static void *read_file_to_mem(const char *filename, size_t *outSize)
 {
-    FILE *file = fopen(filename, "rb");
+    char filename_buf[256];
+    snprintf(filename_buf, sizeof(filename_buf), "%s/%s", SRCDIR, filename);
+
+    FILE *file = fopen(filename_buf, "rb");
     if (!file)
         return NULL;
 
@@ -397,6 +400,33 @@ exit:
     return ret;
 }
 
+static bool Test8(void)
+{
+    json =
+"{\n"
+"  // single-line comment\n"
+"  attr1: 1,\n"
+"\n"
+"  /*\n"
+"   * multi-line comment\n"
+"   */\n"
+"  attr2: 2\n"
+"}";
+
+    printf("%s: %s\n", __func__, json);
+
+    if (jp_parse(jp, &node, json, strlen(json)))
+        return false;
+    if (node->type != JT_OBJ)
+        return false;
+    if (!is_node_int(jn_attr(node, "attr1"), 1))
+        return false;
+    if (!is_node_int(jn_attr(node, "attr2"), 2))
+        return false;
+
+    return true;
+}
+
 
 /*****************************************************************************
 * List of all test functions.
@@ -405,7 +435,7 @@ exit:
 typedef bool (*test_f)(void);
 static test_f tests[] = {
     Test1, Test2, Test3, Test4,
-    Test5, Test6, Test7
+    Test5, Test6, Test7, Test8
 };
 
 

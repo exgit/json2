@@ -92,6 +92,7 @@ struct _marena_t {
     size_t alloc_count;
     size_t search_count;
     size_t size_max;
+    size_t size_total;
     #endif
     marena_chunk_hdr_t *first;  // first arena memory chunk
     marena_chunk_hdr_t *curr;  // current arena memory chunk
@@ -169,6 +170,9 @@ reset:
     ma->alloc_count = 0;
     ma->search_count = 0;
     ma->size_max = 0;
+    for (ma->size_total=0, chunk=ma->first; chunk; chunk=chunk->next) {
+        ma->size_total += chunk->size;
+    }
     #endif
     ma->curr = ma->first;
     ma->curr->allocated = 0;
@@ -231,6 +235,9 @@ static void *marena_alloc(marena_t *ma, size_t size)
             goto exit;
         ma->curr->next = chunk;
         ma->curr = chunk;
+        #if HAVE_TRACE == 1
+        ma->size_total += ma->chunk_size;
+        #endif
     }
 
     ret = (char*)ma->curr + sizeof(marena_chunk_hdr_t) + ma->curr->allocated;
@@ -267,10 +274,10 @@ static void *marena_alloc_rt(marena_t *ma, size_t size)
                 spl->next = 0;
                 spl->size = size;
                 spl->magic = MAGIC;
-                return (char*)(spl + 1);
+                return (spl + 1);
             } else { // allocate full block
                 *prev = curr->next;
-                return (char*)(curr + 1);
+                return (curr + 1);
             }
         }
 
@@ -278,7 +285,7 @@ static void *marena_alloc_rt(marena_t *ma, size_t size)
         ma->search_count++;
         #endif
 
-        if (curr->size < 512 && (++curr->mmc > 16)) {
+        if (++curr->mmc > 8) {
             *prev = curr->next; // remove block from free list
         } else {
             prev = &curr->next; // leave block in free list
@@ -292,7 +299,7 @@ static void *marena_alloc_rt(marena_t *ma, size_t size)
     curr->next = NULL;
     curr->size = size;
     curr->magic = MAGIC;
-    return (char*)(curr + 1);
+    return (curr + 1);
 }
 
 // Resize returnable block.
@@ -391,15 +398,14 @@ static ant_t *ant_create(marena_t *mem)
     ant->an_cnt = 1; // attribute name indexes should start from 1
     ant->an[0] = NULL; // because 0 can not be put in hash table
 
-    uint hts = ant->an_cap * 4;
-    ant->ht_an = marena_alloc_rt(mem, hts * sizeof(ant->ht_an[0]));
+    ant->ht_size = ant->an_cap * 4;
+    uint sk = ant->ht_size * sizeof(ant->ht_an[0]);
+    uint sv = ant->ht_size * sizeof(ant->ht_ani[0]);
+    ant->ht_an = marena_alloc_rt(mem, sk+sv);
     if (ant->ht_an == NULL)
         return NULL;
-    memset(ant->ht_an, 0, hts * sizeof(ant->ht_an[0]));
-    ant->ht_ani = marena_alloc_rt(mem, hts * sizeof(ant->ht_ani[0]));
-    if (ant->ht_ani == NULL)
-        return NULL;
-    ant->ht_size = hts;
+    memset(ant->ht_an, 0, sk+sv);
+    ant->ht_ani = (ani_t*)((char*)ant->ht_an + sk);
 
     return ant;
 }
@@ -476,20 +482,18 @@ static int ant_add_token(ant_t *ant, const char *start, uint len)
         const char **old_an = ant->ht_an;
         ani_t *old_ani = ant->ht_ani;
         uint old_size = ant->ht_size;
-        uint hts = ant->an_cap * 4;
-        ant->ht_an = marena_alloc_rt(ant->mem, hts * sizeof(ant->ht_an[0]));
+        ant->ht_size = ant->an_cap * 4;
+        uint sk = ant->ht_size * sizeof(ant->ht_an[0]);
+        uint sv = ant->ht_size * sizeof(ant->ht_ani[0]);
+        ant->ht_an = marena_alloc_rt(ant->mem, sk+sv);
         if (ant->ht_an == NULL)
             goto exit;
-        memset(ant->ht_an, 0, hts * sizeof(ant->ht_an[0]));
-        ant->ht_ani = marena_alloc_rt(ant->mem, hts * sizeof(ant->ht_ani[0]));
-        if (ant->ht_ani == NULL)
-            goto exit;
-        ant->ht_size = hts;
+        memset(ant->ht_an, 0, sk+sv);
+        ant->ht_ani = (ani_t*)((char*)ant->ht_an + sk);
         for (i = 0; i < old_size; i++) // do rehashing
             if (old_an[i])
                 ant_set(ant, old_an[i], old_ani[i]);
         marena_free_rt(ant->mem, old_an);
-        marena_free_rt(ant->mem, old_ani);
     }
 
     index = (int)ant->an_cnt++;
@@ -525,15 +529,13 @@ static void *ht_create(marena_t *mem, int cnt)
     ht->size = cnt * 4;
 
     uint sk = (uint)ht->size * sizeof(ht->k[0]);
-    ht->k = marena_alloc(mem, sk);
+    uint sv = (uint)ht->size * (ht->num < 256 ? sizeof(uchar) : sizeof(ushort));
+    ht->k = marena_alloc(mem, sk+sv);
     if (ht->k == NULL)
         return NULL;
-    memset(ht->k, 0, sk);
+    memset(ht->k, 0, sk+sv);
+    ht->v = (char*)ht->k + sk;
 
-    uint sv = (uint)ht->size * (ht->num < 256 ? sizeof(uchar) : sizeof(ani_t));
-    ht->v = marena_alloc(mem, sv);
-    if (ht->v == NULL)
-        return NULL;
     return ht;
 }
 
@@ -602,7 +604,7 @@ enum {
     CAE, // array end ']'
     COS, // object start '{'
     COE, // object end '}'
-    CSL // slash '/'
+    CSL  // slash '/'
 };
 
 // Token types.
@@ -683,7 +685,7 @@ static uchar ct[256] = {
     CNV, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, // 40
     CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CAS, CNV, CAE, CNV, CLT, // 50
     CNV, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, // 60
-    CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, COS, CNV, COE, CNV, CNV // 70
+    CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, CLT, COS, CNV, COE, CNV, CNV  // 70
 };
 
 // Forward declarations.
@@ -871,9 +873,7 @@ int jp_parse(jparser_t *jp, jnode_t **root, const char *json, size_t len)
                 return -1;
             if (t == JINSTART)
                 return -1;
-            TRACE("Allocations count: %ld", jp->mem->alloc_count);
-            TRACE("Search count: %ld", jp->mem->search_count);
-            return 0;
+            goto exit;
         case JASTART:
             n = jp_new_node(jp, JT_ARR);
             if (n == NULL)
@@ -974,6 +974,12 @@ int jp_parse(jparser_t *jp, jnode_t **root, const char *json, size_t len)
             return -1;
         }
     }
+
+exit:
+    TRACE("Total memory: %ld", jp->mem->size_total);
+    TRACE("Allocations count: %ld", jp->mem->alloc_count);
+    TRACE("Search count: %ld", jp->mem->search_count);
+    return 0;
 }
 
 // Create new json node.
@@ -1135,8 +1141,40 @@ static void jp_next(jparser_t *jp)
     // skip spaces
     for (; pos < len; pos++) {
         t = ct[jsn[pos]];
-        if (t != CBL)
-            break;
+        if (t == CBL) // blank character
+            continue;
+        if (t == CSL) { // slash character
+            bool cf = false; // comment found flag
+            uint cl = 1; // comment length
+            if (pos+cl<len && jsn[pos+cl]=='/') { // one-line comment
+                for (cl++; ; cl++) {
+                    if (pos+cl >= len) {
+                        cl--;
+                        break;
+                    } else if (jsn[pos+cl]=='\n') {
+                        break;
+                    } else if (jsn[pos+cl]=='\r') {
+                        if (pos+cl+1<len && jsn[pos+cl+1]=='\n')
+                            cl++;
+                        break;
+                    }
+                }
+                cf = true;
+            } else if (pos+cl<len && jsn[pos+cl]=='*') { // multi-line comment
+                for (cl++; pos+cl < len; cl++) {
+                    if (jsn[pos+cl]=='*' && pos+cl+1<len && jsn[pos+cl+1]=='/') {
+                        cl++;
+                        cf = true;
+                        break;
+                    }
+                }
+            }
+            if (cf) {
+                pos += cl;
+                continue;
+            }
+        }
+        break;
     }
 
     // check for input end
